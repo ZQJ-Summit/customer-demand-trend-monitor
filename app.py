@@ -17,14 +17,14 @@ uploaded_file = st.sidebar.file_uploader("Upload today's CSV file", type=["csv"]
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
-    # Check required columns
-    required_cols = ["Ship Date", "Customer Code", "Customer Part No", "EDI Quantity"]
+    # Required columns based on your file
+    required_cols = ["Ship Date", "Customer Code", "Customer Part No", "Order Quantity"]
     for col in required_cols:
         if col not in df.columns:
             st.error(f"Missing required column: {col}")
             st.stop()
 
-    # Convert dates
+    # Convert Ship Date to date
     df["Ship Date"] = pd.to_datetime(df["Ship Date"], errors="coerce")
     df["Date"] = df["Ship Date"].dt.date
 
@@ -46,19 +46,19 @@ if uploaded_file:
         st.stop()
 
     # Daily aggregated data
-    daily = df_filtered.groupby("Date")["EDI Quantity"].sum().reset_index()
+    daily = df_filtered.groupby("Date")["Order Quantity"].sum().reset_index()
 
     # Calculate day-over-day & week-over-week
-    daily["Prev Day"] = daily["EDI Quantity"].shift(1)
-    daily["Day Diff"] = daily["EDI Quantity"] - daily["Prev Day"]
+    daily["Prev Day"] = daily["Order Quantity"].shift(1)
+    daily["Day Diff"] = daily["Order Quantity"] - daily["Prev Day"]
 
-    daily["Prev Week"] = daily["EDI Quantity"].shift(7)
-    daily["Week Diff"] = daily["EDI Quantity"] - daily["Prev Week"]
+    daily["Prev Week"] = daily["Order Quantity"].shift(7)
+    daily["Week Diff"] = daily["Order Quantity"] - daily["Prev Week"]
 
     # Summary metrics
     col1, col2, col3 = st.columns(3)
 
-    latest_qty = daily["EDI Quantity"].iloc[-1]
+    latest_qty = daily["Order Quantity"].iloc[-1]
     day_diff = daily["Day Diff"].iloc[-1]
     week_diff = daily["Week Diff"].iloc[-1]
 
@@ -67,7 +67,7 @@ if uploaded_file:
     col3.metric("Change vs Last Week", f"{week_diff}")
 
     st.subheader("📉 Daily Trend")
-    st.line_chart(daily.set_index("Date")["EDI Quantity"])
+    st.line_chart(daily.set_index("Date")["Order Quantity"])
 
     st.subheader("📋 Data Table")
     st.dataframe(daily)
