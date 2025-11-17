@@ -1,76 +1,78 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(
-    page_title="Customer Demand Trend Monitor",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Customer Demand Trend Monitor", layout="wide")
 st.title("📈 Customer Demand Trend Monitor")
-st.write("Daily monitoring for customer demand & product trends.")
+st.write("Compare daily demand trend between two uploaded files.")
 
 # -----------------------------------------
-# Load Data
+# Upload yesterday & today files
 # -----------------------------------------
-uploaded_file = st.sidebar.file_uploader("Upload today's CSV file", type=["csv"])
+st.sidebar.header("Upload Files")
+yesterday_file = st.sidebar.file_uploader("Upload Yesterday's CSV", type=["csv"])
+today_file = st.sidebar.file_uploader("Upload Today's CSV", type=["csv"])
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+if yesterday_file and today_file:
+    df_old = pd.read_csv(yesterday_file)
+    df_new = pd.read_csv(today_file)
 
-    # Required columns based on your file
     required_cols = ["Ship Date", "Customer Code", "Customer Part No", "Order Quantity"]
+
     for col in required_cols:
-        if col not in df.columns:
+        if col not in df_old.columns or col not in df_new.columns:
             st.error(f"Missing required column: {col}")
             st.stop()
 
-    # Convert Ship Date to date
-    df["Ship Date"] = pd.to_datetime(df["Ship Date"], errors="coerce")
-    df["Date"] = df["Ship Date"].dt.date
+    # Parse date
+    df_old["Ship Date"] = pd.to_datetime(df_old["Ship Date"], errors="coerce")
+    df_new["Ship Date"] = pd.to_datetime(df_new["Ship Date"], errors="coerce")
 
-    # Sidebar filters
-    customers = df["Customer Code"].dropna().unique()
-    products = df["Customer Part No"].dropna().unique()
+    df_old["Date"] = df_old["Ship Date"].dt.date
+    df_new["Date"] = df_new["Ship Date"].dt.date
+
+    # Filters
+    customers = sorted(set(df_old["Customer Code"]).union(df_new["Customer Code"]))
+    products = sorted(set(df_old["Customer Part No"]).union(df_new["Customer Part No"]))
 
     selected_customer = st.sidebar.selectbox("Select Customer", customers)
     selected_product = st.sidebar.selectbox("Select Product", products)
 
-    # Filter data
-    df_filtered = df[
-        (df["Customer Code"] == selected_customer) &
-        (df["Customer Part No"] == selected_product)
+    # Filter both datasets
+    old_filtered = df_old[
+        (df_old["Customer Code"] == selected_customer) &
+        (df_old["Customer Part No"] == selected_product)
     ]
 
-    if df_filtered.empty:
-        st.warning("No data for selected customer & part number.")
+    new_filtered = df_new[
+        (df_new["Customer Code"] == selected_customer) &
+        (df_new["Customer Part No"] == selected_product)
+    ]
+
+    if old_filtered.empty or new_filtered.empty:
+        st.warning("Selected customer/product not found in both files.")
         st.stop()
 
-    # Daily aggregated data
-    daily = df_filtered.groupby("Date")["Order Quantity"].sum().reset_index()
+    # Aggregate
+    daily_old = old_filtered.groupby("Date")["Order Quantity"].sum().reset_index()
+    daily_new = new_filtered.groupby("Date")["Order Quantity"].sum().reset_index()
 
-    # Calculate day-over-day & week-over-week
-    daily["Prev Day"] = daily["Order Quantity"].shift(1)
-    daily["Day Diff"] = daily["Order Quantity"] - daily["Prev Day"]
+    daily_old = daily_old.rename(columns={"Order Quantity": "Yesterday"})
+    daily_new = daily_new.rename(columns={"Order Quantity": "Today"})
 
-    daily["Prev Week"] = daily["Order Quantity"].shift(7)
-    daily["Week Diff"] = daily["Order Quantity"] - daily["Prev Week"]
+    # Merge for comparison
+    merged = pd.merge(daily_old, daily_new, on="Date", how="outer").sort_values("Date")
+    
+    if not merged.empty:
+        latest_date = merged["Date"].max()
+        five_months_ago = latest_date - pd.Timedelta(days=150)
+        merged = merged[merged["Date"] >= five_months_ago]
+    
 
-    # Summary metrics
-    col1, col2, col3 = st.columns(3)
-
-    latest_qty = daily["Order Quantity"].iloc[-1]
-    day_diff = daily["Day Diff"].iloc[-1]
-    week_diff = daily["Week Diff"].iloc[-1]
-
-    col1.metric("Today Demand", f"{latest_qty}")
-    col2.metric("Change vs Yesterday", f"{day_diff}")
-    col3.metric("Change vs Last Week", f"{week_diff}")
-
-    st.subheader("📉 Daily Trend")
-    st.line_chart(daily.set_index("Date")["Order Quantity"])
+    st.subheader("📉 Daily Demand Comparison")
+    st.line_chart(merged.set_index("Date"))
 
     st.subheader("📋 Data Table")
-    st.dataframe(daily)
+    st.dataframe(merged)
 
 else:
-    st.info("Upload a CSV file to view the dashboard.")
+    st.info("Please upload both Yesterday and Today CSV files.")
