@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 
 st.set_page_config(
     page_title="Customer Demand Trend Monitor",
@@ -18,36 +17,38 @@ uploaded_file = st.sidebar.file_uploader("Upload today's CSV file", type=["csv"]
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
-    # Ensure Ship Date exists
-    if "Ship Date" not in df.columns:
-        st.error("Your file does not contain 'Ship Date' column. Please verify the file format.")
-        st.stop()
+    # Check required columns
+    required_cols = ["Ship Date", "Customer Code", "Customer Part No", "EDI Quantity"]
+    for col in required_cols:
+        if col not in df.columns:
+            st.error(f"Missing required column: {col}")
+            st.stop()
 
-    # Convert date
+    # Convert dates
     df["Ship Date"] = pd.to_datetime(df["Ship Date"], errors="coerce")
     df["Date"] = df["Ship Date"].dt.date
 
-    # Create dropdown filters
-    customers = df["Customer"].dropna().unique()
+    # Sidebar filters
+    customers = df["Customer Code"].dropna().unique()
     products = df["Customer Part No"].dropna().unique()
 
     selected_customer = st.sidebar.selectbox("Select Customer", customers)
     selected_product = st.sidebar.selectbox("Select Product", products)
 
-    # Filtering
+    # Filter data
     df_filtered = df[
-        (df["Customer"] == selected_customer) &
+        (df["Customer Code"] == selected_customer) &
         (df["Customer Part No"] == selected_product)
     ]
 
     if df_filtered.empty:
-        st.warning("No data available for selected customer/part.")
+        st.warning("No data for selected customer & part number.")
         st.stop()
 
-    # Daily sum
+    # Daily aggregated data
     daily = df_filtered.groupby("Date")["EDI Quantity"].sum().reset_index()
 
-    # Differences
+    # Calculate day-over-day & week-over-week
     daily["Prev Day"] = daily["EDI Quantity"].shift(1)
     daily["Day Diff"] = daily["EDI Quantity"] - daily["Prev Day"]
 
@@ -70,5 +71,6 @@ if uploaded_file:
 
     st.subheader("📋 Data Table")
     st.dataframe(daily)
+
 else:
     st.info("Upload a CSV file to view the dashboard.")
