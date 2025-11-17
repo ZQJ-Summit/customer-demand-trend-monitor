@@ -11,6 +11,13 @@ st.set_page_config(page_title="Customer Demand Trend Monitor", layout="wide")
 st.title("📈 Customer Demand Trend Monitor")
 st.write("Compare any two uploaded dates, with automatic historical storage in Neon.")
 
+# ---------------------------------------------
+# Initialize session_state
+# ---------------------------------------------
+if "uploaded_df" not in st.session_state:
+    st.session_state.uploaded_df = None
+if "upload_done" not in st.session_state:
+    st.session_state.upload_done = False
 
 # ---------------------------------------------
 # Function: Connect to Neon
@@ -24,9 +31,8 @@ def get_conn():
         port=st.secrets["PGPORT"]
     )
 
-
 # ---------------------------------------------
-# Utility: Normalize column names
+# Utility: Normalize Column Names
 # ---------------------------------------------
 def normalize_cols(df):
     df.columns = (
@@ -38,13 +44,12 @@ def normalize_cols(df):
     )
     return df
 
-
 # ---------------------------------------------
-# Step 1 — Upload CSV → Write into Neon
+# Step 1 — Upload CSV (Only once)
 # ---------------------------------------------
 uploaded_file = st.sidebar.file_uploader("Upload today's CSV", type=["csv"])
 
-if uploaded_file:
+if uploaded_file and not st.session_state.upload_done:
     st.info("⏳ Processing your file...")
 
     try:
@@ -53,34 +58,35 @@ if uploaded_file:
         st.error(f"❌ CSV Read Error: {e}")
         st.stop()
 
-    # Normalize column names
     df = normalize_cols(df)
 
-    # Column name mapping
-    col_map = {
+    required = {
         "ship date": "ship_date",
         "customer code": "customer_code",
         "customer part no": "customer_part_no",
-        "order quantity": "order_qty",
+        "order quantity": "order_qty"
     }
 
-    # Validate required columns
-    missing_cols = [c for c in col_map if c not in df.columns]
-    if missing_cols:
-        st.error(f"❌ Missing required columns: {missing_cols}")
-        st.write("Your columns:", list(df.columns))
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        st.error(f"❌ Missing columns: {missing}")
         st.stop()
 
-    # Apply renaming
-    df = df.rename(columns=col_map)
-
-    # Parse date
+    df = df.rename(columns=required)
     df["ship_date"] = pd.to_datetime(df["ship_date"], errors="coerce").dt.date
 
-    upload_date = datetime.now().date()
-    total_rows = len(df)
+    st.session_state.uploaded_df = df
+    st.session_state.upload_done = True
+    st.experimental_rerun()
 
-    # Write into Neon
+# ---------------------------------------------
+# Step 2 — Insert into Neon (Only once)
+# ---------------------------------------------
+if st.session_state.upload_done and st.session_state.uploaded_df is not None:
+
+    df = st.session_state.uploaded_df
+    upload_date = datetime.now().date()
+
     try:
         conn = get_conn()
         cur = conn.cursor()
@@ -91,32 +97,33 @@ if uploaded_file:
             VALUES (%s, %s, %s, %s, %s)
         """
 
-        # Batch insert — VERY FAST
-        rows_to_insert = [
+        batch = [
             (
                 upload_date,
                 row["ship_date"],
                 row["customer_code"],
                 row["customer_part_no"],
-                int(row["order_qty"]),
+                int(row["order_qty"])
             )
             for _, row in df.iterrows()
         ]
 
-        cur.executemany(insert_sql, rows_to_insert)
+        cur.executemany(insert_sql, batch)
         conn.commit()
         cur.close()
         conn.close()
 
-        st.success(f"✅ Uploaded {total_rows} rows into Neon (upload_date = {upload_date})")
+        st.success(f"✅ Uploaded {len(df)} rows into Neon (upload_date = {upload_date})")
 
     except Exception as e:
         st.error(f"❌ Database Insert Error: {e}")
         st.stop()
 
+    # Prevent repeated inserts
+    st.session_state.uploaded_df = None
 
 # ---------------------------------------------
-# Step 2 — Read last 150 days from Neon
+# Step 3 — Read last 150 days from Neon
 # ---------------------------------------------
 try:
     conn = get_conn()
@@ -141,14 +148,12 @@ if not rows:
     st.info("No data yet. Upload your first CSV.")
     st.stop()
 
-
 history = pd.DataFrame(rows, columns=[
     "upload_date", "ship_date", "customer_code", "customer_part_no", "order_qty"
 ])
 
-
 # ---------------------------------------------
-# Step 3 — Sidebar Filters
+# Step 4 — Sidebar Filters
 # ---------------------------------------------
 customers = sorted(history["customer_code"].unique())
 selected_customer = st.sidebar.selectbox("Customer", customers)
@@ -161,9 +166,8 @@ df_filtered = history[
     (history["customer_part_no"] == selected_product)
 ]
 
-
 # ---------------------------------------------
-# Step 4 — User Chooses Two Upload Dates
+# Step 5 — Date Selection
 # ---------------------------------------------
 upload_dates = sorted(df_filtered["upload_date"].unique())
 
@@ -177,9 +181,8 @@ date_b = st.sidebar.selectbox("Select Upload Date B", upload_dates, index=1)
 df_a = df_filtered[df_filtered["upload_date"] == date_a]
 df_b = df_filtered[df_filtered["upload_date"] == date_b]
 
-
 # ---------------------------------------------
-# Step 5 — Aggregate & Merge
+# Step 6 — Aggregate & Display
 # ---------------------------------------------
 daily_a = df_a.groupby("ship_date")["order_qty"].sum().reset_index()
 daily_b = df_b.groupby("ship_date")["order_qty"].sum().reset_index()
@@ -193,10 +196,6 @@ merged = (
     .fillna(0)
 )
 
-
-# ---------------------------------------------
-# Step 6 — Plot + Table
-# ---------------------------------------------
 st.subheader(f"📉 Trend Comparison: {date_a} vs {date_b} (Last 5 Months)")
 st.line_chart(merged.set_index("ship_date"))
 
