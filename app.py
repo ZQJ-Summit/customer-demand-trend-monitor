@@ -1,34 +1,34 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# ---------------------------------------------
-# Streamlit Page Config
-# ---------------------------------------------
+# -------------------------------------------------
+# Streamlit Config
+# -------------------------------------------------
 st.set_page_config(page_title="Customer Demand Trend Monitor", layout="wide")
 
 st.title("📈 Customer Demand Trend Monitor")
 st.write("Compare any two uploaded dates, with automatic historical storage in Neon.")
 
-# ---------------------------------------------
+# -------------------------------------------------
 # Reset Button
-# ---------------------------------------------
+# -------------------------------------------------
 if st.sidebar.button("🔄 Reset App"):
     st.session_state.clear()
     st.rerun()
 
-# ---------------------------------------------
+# -------------------------------------------------
 # Initialize session_state
-# ---------------------------------------------
+# -------------------------------------------------
 if "uploaded_df" not in st.session_state:
     st.session_state.uploaded_df = None
 if "upload_done" not in st.session_state:
     st.session_state.upload_done = False
 
-# ---------------------------------------------
-# Function: Connect to Neon
-# ---------------------------------------------
+# -------------------------------------------------
+# Connect to Neon
+# -------------------------------------------------
 def get_conn():
     return psycopg2.connect(
         host=st.secrets["PGHOST"],
@@ -38,26 +38,26 @@ def get_conn():
         port=st.secrets["PGPORT"]
     )
 
-# ---------------------------------------------
+# -------------------------------------------------
 # Normalize Column Names
-# ---------------------------------------------
+# -------------------------------------------------
 def normalize_cols(df):
     df.columns = (
-        df.columns
-        .str.strip()
+        df.columns.str.strip()
         .str.replace("\n", " ")
         .str.replace("  ", " ")
         .str.lower()
     )
     return df
 
-# ---------------------------------------------
-# Step 1 — Upload CSV
-# ---------------------------------------------
+# -------------------------------------------------
+# Step 1 — Upload CSV (only once per file)
+# -------------------------------------------------
 uploaded_file = st.sidebar.file_uploader("Upload today's CSV", type=["csv"])
 
 if uploaded_file and not st.session_state.upload_done:
-    st.info("⏳ Processing your file...")
+
+    st.info("⏳ Reading your file...")
 
     try:
         df = pd.read_csv(uploaded_file)
@@ -67,28 +67,33 @@ if uploaded_file and not st.session_state.upload_done:
 
     df = normalize_cols(df)
 
+    # Required columns
     required = {
         "ship date": "ship_date",
         "customer code": "customer_code",
         "customer part no": "customer_part_no",
-        "order quantity": "order_qty"
+        "order quantity": "order_qty",
     }
 
     missing = [c for c in required if c not in df.columns]
     if missing:
         st.error(f"❌ Missing columns: {missing}")
+        st.write("Columns in your CSV:", list(df.columns))
         st.stop()
 
     df = df.rename(columns=required)
     df["ship_date"] = pd.to_datetime(df["ship_date"], errors="coerce").dt.date
 
+    # Store temporarily
     st.session_state.uploaded_df = df
     st.session_state.upload_done = True
+
+    st.success("CSV read successfully! Preparing to upload...")
     st.rerun()
 
-# ---------------------------------------------
-# Step 2 — Insert into Neon
-# ---------------------------------------------
+# -------------------------------------------------
+# Step 2 — Insert into Neon (only once)
+# -------------------------------------------------
 if st.session_state.upload_done and st.session_state.uploaded_df is not None:
 
     df = st.session_state.uploaded_df
@@ -110,13 +115,14 @@ if st.session_state.upload_done and st.session_state.uploaded_df is not None:
                 row["ship_date"],
                 row["customer_code"],
                 row["customer_part_no"],
-                int(row["order_qty"])
+                int(row["order_qty"]),
             )
             for _, row in df.iterrows()
         ]
 
         cur.executemany(insert_sql, batch)
         conn.commit()
+
         cur.close()
         conn.close()
 
@@ -126,12 +132,13 @@ if st.session_state.upload_done and st.session_state.uploaded_df is not None:
         st.error(f"❌ Database Insert Error: {e}")
         st.stop()
 
-    # Stop repeat insert
+    # Clean to avoid reinsert
     st.session_state.uploaded_df = None
+    st.session_state.upload_done = True
 
-# ---------------------------------------------
-# Step 3 — Query Neon
-# ---------------------------------------------
+# -------------------------------------------------
+# Step 3 — Read historical data
+# -------------------------------------------------
 try:
     conn = get_conn()
     cur = conn.cursor()
@@ -159,9 +166,9 @@ history = pd.DataFrame(rows, columns=[
     "upload_date", "ship_date", "customer_code", "customer_part_no", "order_qty"
 ])
 
-# ---------------------------------------------
-# Step 4 — Filters
-# ---------------------------------------------
+# -------------------------------------------------
+# Step 4 — Sidebar Filters
+# -------------------------------------------------
 customers = sorted(history["customer_code"].unique())
 selected_customer = st.sidebar.selectbox("Customer", customers)
 
@@ -173,9 +180,9 @@ df_filtered = history[
     (history["customer_part_no"] == selected_product)
 ]
 
-# ---------------------------------------------
-# Step 5 — Date Selection
-# ---------------------------------------------
+# -------------------------------------------------
+# Step 5 — User selects two upload dates
+# -------------------------------------------------
 upload_dates = sorted(df_filtered["upload_date"].unique())
 
 if len(upload_dates) < 2:
@@ -188,9 +195,9 @@ date_b = st.sidebar.selectbox("Select Upload Date B", upload_dates, index=1)
 df_a = df_filtered[df_filtered["upload_date"] == date_a]
 df_b = df_filtered[df_filtered["upload_date"] == date_b]
 
-# ---------------------------------------------
-# Step 6 — Charts
-# ---------------------------------------------
+# -------------------------------------------------
+# Step 6 — Plotting
+# -------------------------------------------------
 daily_a = df_a.groupby("ship_date")["order_qty"].sum().reset_index()
 daily_b = df_b.groupby("ship_date")["order_qty"].sum().reset_index()
 
