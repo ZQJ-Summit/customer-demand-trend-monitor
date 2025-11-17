@@ -11,6 +11,11 @@ st.set_page_config(page_title="Customer Demand Trend Monitor", layout="wide")
 st.title("📈 Customer Demand Trend Monitor")
 st.write("Compare any two uploaded dates, with automatic historical storage in Neon.")
 
+
+if st.sidebar.button("🔄 Reset App"):
+    st.session_state.clear()
+    st.experimental_rerun()
+
 # ---------------------------------------------
 # Initialize session_state
 # ---------------------------------------------
