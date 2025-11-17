@@ -11,7 +11,9 @@ st.set_page_config(page_title="Customer Demand Trend Monitor", layout="wide")
 st.title("📈 Customer Demand Trend Monitor")
 st.write("Compare any two uploaded dates, with automatic historical storage in Neon.")
 
-
+# ---------------------------------------------
+# Reset Button
+# ---------------------------------------------
 if st.sidebar.button("🔄 Reset App"):
     st.session_state.clear()
     st.rerun()
@@ -37,7 +39,7 @@ def get_conn():
     )
 
 # ---------------------------------------------
-# Utility: Normalize Column Names
+# Normalize Column Names
 # ---------------------------------------------
 def normalize_cols(df):
     df.columns = (
@@ -50,7 +52,7 @@ def normalize_cols(df):
     return df
 
 # ---------------------------------------------
-# Step 1 — Upload CSV (Only once)
+# Step 1 — Upload CSV
 # ---------------------------------------------
 uploaded_file = st.sidebar.file_uploader("Upload today's CSV", type=["csv"])
 
@@ -82,10 +84,10 @@ if uploaded_file and not st.session_state.upload_done:
 
     st.session_state.uploaded_df = df
     st.session_state.upload_done = True
-    st.experimental_rerun()
+    st.rerun()
 
 # ---------------------------------------------
-# Step 2 — Insert into Neon (Only once)
+# Step 2 — Insert into Neon
 # ---------------------------------------------
 if st.session_state.upload_done and st.session_state.uploaded_df is not None:
 
@@ -124,11 +126,11 @@ if st.session_state.upload_done and st.session_state.uploaded_df is not None:
         st.error(f"❌ Database Insert Error: {e}")
         st.stop()
 
-    # Prevent repeated inserts
+    # Stop repeat insert
     st.session_state.uploaded_df = None
 
 # ---------------------------------------------
-# Step 3 — Read last 150 days from Neon
+# Step 3 — Query Neon
 # ---------------------------------------------
 try:
     conn = get_conn()
@@ -158,7 +160,7 @@ history = pd.DataFrame(rows, columns=[
 ])
 
 # ---------------------------------------------
-# Step 4 — Sidebar Filters
+# Step 4 — Filters
 # ---------------------------------------------
 customers = sorted(history["customer_code"].unique())
 selected_customer = st.sidebar.selectbox("Customer", customers)
@@ -187,7 +189,7 @@ df_a = df_filtered[df_filtered["upload_date"] == date_a]
 df_b = df_filtered[df_filtered["upload_date"] == date_b]
 
 # ---------------------------------------------
-# Step 6 — Aggregate & Display
+# Step 6 — Charts
 # ---------------------------------------------
 daily_a = df_a.groupby("ship_date")["order_qty"].sum().reset_index()
 daily_b = df_b.groupby("ship_date")["order_qty"].sum().reset_index()
