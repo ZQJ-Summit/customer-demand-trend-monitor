@@ -1,78 +1,135 @@
 import streamlit as st
 import pandas as pd
+import psycopg2
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Customer Demand Trend Monitor", layout="wide")
+
 st.title("📈 Customer Demand Trend Monitor")
-st.write("Compare daily demand trend between two uploaded files.")
+st.write("Compare any two uploaded dates, with automatic historical storage in Neon.")
 
-# -----------------------------------------
-# Upload yesterday & today files
-# -----------------------------------------
-st.sidebar.header("Upload Files")
-yesterday_file = st.sidebar.file_uploader("Upload Yesterday's CSV", type=["csv"])
-today_file = st.sidebar.file_uploader("Upload Today's CSV", type=["csv"])
+# ----------------------------
+# Connect to Neon
+# ----------------------------
+def get_conn():
+    return psycopg2.connect(
+        host=st.secrets["PGHOST"],
+        database=st.secrets["PGDATABASE"],
+        user=st.secrets["PGUSER"],
+        password=st.secrets["PGPASSWORD"],
+        port=st.secrets["PGPORT"]
+    )
 
-if yesterday_file and today_file:
-    df_old = pd.read_csv(yesterday_file)
-    df_new = pd.read_csv(today_file)
+# ----------------------------
+# Step 1: Upload CSV → Write to Neon
+# ----------------------------
+uploaded_file = st.sidebar.file_uploader("Upload today's CSV", type=["csv"])
+
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
 
     required_cols = ["Ship Date", "Customer Code", "Customer Part No", "Order Quantity"]
-
     for col in required_cols:
-        if col not in df_old.columns or col not in df_new.columns:
+        if col not in df.columns:
             st.error(f"Missing required column: {col}")
             st.stop()
 
-    # Parse date
-    df_old["Ship Date"] = pd.to_datetime(df_old["Ship Date"], errors="coerce")
-    df_new["Ship Date"] = pd.to_datetime(df_new["Ship Date"], errors="coerce")
+    df["Ship Date"] = pd.to_datetime(df["Ship Date"], errors="coerce").dt.date
+    upload_date = datetime.now().date()
 
-    df_old["Date"] = df_old["Ship Date"].dt.date
-    df_new["Date"] = df_new["Ship Date"].dt.date
+    conn = get_conn()
+    cur = conn.cursor()
 
-    # Filters
-    customers = sorted(set(df_old["Customer Code"]).union(df_new["Customer Code"]))
-    products = sorted(set(df_old["Customer Part No"]).union(df_new["Customer Part No"]))
+    insert_sql = """
+        INSERT INTO demand_history (upload_date, ship_date, customer_code, customer_part_no, order_qty)
+        VALUES (%s, %s, %s, %s, %s)
+    """
 
-    selected_customer = st.sidebar.selectbox("Select Customer", customers)
-    selected_product = st.sidebar.selectbox("Select Product", products)
+    for _, row in df.iterrows():
+        cur.execute(insert_sql, (
+            upload_date,
+            row["Ship Date"],
+            row["Customer Code"],
+            row["Customer Part No"],
+            int(row["Order Quantity"])
+        ))
 
-    # Filter both datasets
-    old_filtered = df_old[
-        (df_old["Customer Code"] == selected_customer) &
-        (df_old["Customer Part No"] == selected_product)
-    ]
+    conn.commit()
+    cur.close()
+    conn.close()
 
-    new_filtered = df_new[
-        (df_new["Customer Code"] == selected_customer) &
-        (df_new["Customer Part No"] == selected_product)
-    ]
+    st.success(f"Uploaded {len(df)} rows into Neon for date {upload_date}")
 
-    if old_filtered.empty or new_filtered.empty:
-        st.warning("Selected customer/product not found in both files.")
-        st.stop()
+# ----------------------------
+# Step 2: Read recent 5 months from Neon
+# ----------------------------
+conn = get_conn()
+cur = conn.cursor()
 
-    # Aggregate
-    daily_old = old_filtered.groupby("Date")["Order Quantity"].sum().reset_index()
-    daily_new = new_filtered.groupby("Date")["Order Quantity"].sum().reset_index()
+cur.execute("""
+    SELECT upload_date, ship_date, customer_code, customer_part_no, order_qty
+    FROM demand_history
+    WHERE ship_date >= CURRENT_DATE - INTERVAL '150 days'
+    ORDER BY ship_date;
+""")
 
-    daily_old = daily_old.rename(columns={"Order Quantity": "Yesterday"})
-    daily_new = daily_new.rename(columns={"Order Quantity": "Today"})
+rows = cur.fetchall()
+cur.close()
+conn.close()
 
-    # Merge for comparison
-    merged = pd.merge(daily_old, daily_new, on="Date", how="outer").sort_values("Date")
-    
-    if not merged.empty:
-        latest_date = merged["Date"].max()
-        five_months_ago = latest_date - pd.Timedelta(days=150)
-        merged = merged[merged["Date"] >= five_months_ago]
-    
+if not rows:
+    st.info("No data yet. Upload your first CSV.")
+    st.stop()
 
-    st.subheader("📉 Daily Demand Comparison")
-    st.line_chart(merged.set_index("Date"))
+history = pd.DataFrame(rows, columns=[
+    "upload_date", "ship_date", "customer_code", "customer_part_no", "order_qty"
+])
 
-    st.subheader("📋 Data Table")
-    st.dataframe(merged)
+# ----------------------------
+# Step 3: Filters
+# ----------------------------
+customers = history["customer_code"].unique()
+selected_customer = st.sidebar.selectbox("Customer", customers)
 
-else:
-    st.info("Please upload both Yesterday and Today CSV files.")
+products = history[history["customer_code"] == selected_customer]["customer_part_no"].unique()
+selected_product = st.sidebar.selectbox("Product", products)
+
+df_filtered = history[
+    (history["customer_code"] == selected_customer) &
+    (history["customer_part_no"] == selected_product)
+]
+
+# ----------------------------
+# Step 4: Select ANY two upload dates to compare
+# ----------------------------
+available_dates = sorted(df_filtered["upload_date"].unique())
+
+if len(available_dates) < 2:
+    st.warning("Need at least two upload dates to compare.")
+    st.stop()
+
+date1 = st.sidebar.selectbox("Select Upload Date A", available_dates, index=0)
+date2 = st.sidebar.selectbox("Select Upload Date B", available_dates, index=1)
+
+df_a = df_filtered[df_filtered["upload_date"] == date1]
+df_b = df_filtered[df_filtered["upload_date"] == date2]
+
+# aggregate
+daily_a = df_a.groupby("ship_date")["order_qty"].sum().reset_index()
+daily_b = df_b.groupby("ship_date")["order_qty"].sum().reset_index()
+
+daily_a.rename(columns={"order_qty": f"{date1}"}, inplace=True)
+daily_b.rename(columns={"order_qty": f"{date2}"}, inplace=True)
+
+# merge
+merged = pd.merge(daily_a, daily_b, on="ship_date", how="outer").sort_values("ship_date")
+merged = merged.fillna(0)
+
+# ----------------------------
+# Step 5: Plot
+# ----------------------------
+st.subheader(f"📉 Comparison Between {date1} and {date2} (Last 5 Months)")
+st.line_chart(merged.set_index("ship_date"))
+
+st.subheader("📋 Data Table")
+st.dataframe(merged)
