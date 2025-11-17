@@ -9,22 +9,8 @@ from datetime import datetime
 st.set_page_config(page_title="Customer Demand Trend Monitor", layout="wide")
 
 st.title("📈 Customer Demand Trend Monitor")
-st.write("Compare any two uploaded dates, with automatic historical storage in Neon.")
+st.write("Compare any two uploaded dates with historical storage in Neon.")
 
-# -------------------------------------------------
-# Reset Button
-# -------------------------------------------------
-if st.sidebar.button("🔄 Reset App"):
-    st.session_state.clear()
-    st.rerun()
-
-# -------------------------------------------------
-# Initialize session_state
-# -------------------------------------------------
-if "uploaded_df" not in st.session_state:
-    st.session_state.uploaded_df = None
-if "upload_done" not in st.session_state:
-    st.session_state.upload_done = False
 
 # -------------------------------------------------
 # Connect to Neon
@@ -35,8 +21,9 @@ def get_conn():
         database=st.secrets["PGDATABASE"],
         user=st.secrets["PGUSER"],
         password=st.secrets["PGPASSWORD"],
-        port=st.secrets["PGPORT"]
+        port=st.secrets["PGPORT"],
     )
+
 
 # -------------------------------------------------
 # Normalize Column Names
@@ -50,24 +37,24 @@ def normalize_cols(df):
     )
     return df
 
-# -------------------------------------------------
-# Step 1 — Upload CSV (only once per file)
-# -------------------------------------------------
-uploaded_file = st.sidebar.file_uploader("Upload today's CSV", type=["csv"])
 
-if uploaded_file and not st.session_state.upload_done:
+# -------------------------------------------------
+# File Upload
+# -------------------------------------------------
+st.sidebar.header("Upload today's CSV")
+uploaded_file = st.sidebar.file_uploader("Select CSV", type=["csv"])
 
-    st.info("⏳ Reading your file...")
+if uploaded_file:
+    st.info("⏳ Reading file...")
 
     try:
         df = pd.read_csv(uploaded_file)
     except Exception as e:
-        st.error(f"❌ CSV Read Error: {e}")
+        st.error(f"❌ Error reading CSV: {e}")
         st.stop()
 
     df = normalize_cols(df)
 
-    # Required columns
     required = {
         "ship date": "ship_date",
         "customer code": "customer_code",
@@ -78,66 +65,50 @@ if uploaded_file and not st.session_state.upload_done:
     missing = [c for c in required if c not in df.columns]
     if missing:
         st.error(f"❌ Missing columns: {missing}")
-        st.write("Columns in your CSV:", list(df.columns))
         st.stop()
 
     df = df.rename(columns=required)
     df["ship_date"] = pd.to_datetime(df["ship_date"], errors="coerce").dt.date
 
-    # Store temporarily
-    st.session_state.uploaded_df = df
-    st.session_state.upload_done = True
+    st.success("File loaded successfully!")
 
-    st.success("CSV read successfully! Preparing to upload...")
-    st.rerun()
+    if st.sidebar.button("📤 Upload to Neon"):
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
 
-# -------------------------------------------------
-# Step 2 — Insert into Neon (only once)
-# -------------------------------------------------
-if st.session_state.upload_done and st.session_state.uploaded_df is not None:
+            insert_sql = """
+                INSERT INTO demand_history
+                (upload_date, ship_date, customer_code, customer_part_no, order_qty)
+                VALUES (%s, %s, %s, %s, %s)
+            """
 
-    df = st.session_state.uploaded_df
-    upload_date = datetime.now().date()
+            upload_date = datetime.now().date()
 
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
+            rows = [
+                (
+                    upload_date,
+                    row["ship_date"],
+                    row["customer_code"],
+                    row["customer_part_no"],
+                    int(row["order_qty"]),
+                )
+                for _, row in df.iterrows()
+            ]
 
-        insert_sql = """
-            INSERT INTO demand_history
-            (upload_date, ship_date, customer_code, customer_part_no, order_qty)
-            VALUES (%s, %s, %s, %s, %s)
-        """
+            cur.executemany(insert_sql, rows)
+            conn.commit()
+            cur.close()
+            conn.close()
 
-        batch = [
-            (
-                upload_date,
-                row["ship_date"],
-                row["customer_code"],
-                row["customer_part_no"],
-                int(row["order_qty"]),
-            )
-            for _, row in df.iterrows()
-        ]
+            st.success(f"✅ Uploaded {len(df)} rows to Neon!")
 
-        cur.executemany(insert_sql, batch)
-        conn.commit()
+        except Exception as e:
+            st.error(f"❌ Neon insert error: {e}")
 
-        cur.close()
-        conn.close()
-
-        st.success(f"✅ Uploaded {len(df)} rows into Neon (upload_date = {upload_date})")
-
-    except Exception as e:
-        st.error(f"❌ Database Insert Error: {e}")
-        st.stop()
-
-    # Clean to avoid reinsert
-    st.session_state.uploaded_df = None
-    st.session_state.upload_done = True
 
 # -------------------------------------------------
-# Step 3 — Read historical data
+# Load History
 # -------------------------------------------------
 try:
     conn = get_conn()
@@ -146,7 +117,6 @@ try:
     cur.execute("""
         SELECT upload_date, ship_date, customer_code, customer_part_no, order_qty
         FROM demand_history
-        WHERE ship_date >= CURRENT_DATE - INTERVAL '150 days'
         ORDER BY ship_date;
     """)
 
@@ -155,20 +125,23 @@ try:
     conn.close()
 
 except Exception as e:
-    st.error(f"❌ Database Query Error: {e}")
+    st.error(f"❌ Neon read error: {e}")
     st.stop()
 
 if not rows:
-    st.info("No data yet. Upload your first CSV.")
+    st.info("Upload your first CSV to begin.")
     st.stop()
 
 history = pd.DataFrame(rows, columns=[
     "upload_date", "ship_date", "customer_code", "customer_part_no", "order_qty"
 ])
 
+
 # -------------------------------------------------
-# Step 4 — Sidebar Filters
+# Filters
 # -------------------------------------------------
+st.sidebar.header("Filters")
+
 customers = sorted(history["customer_code"].unique())
 selected_customer = st.sidebar.selectbox("Customer", customers)
 
@@ -180,23 +153,25 @@ df_filtered = history[
     (history["customer_part_no"] == selected_product)
 ]
 
+
 # -------------------------------------------------
-# Step 5 — User selects two upload dates
+# Upload Date Comparison
 # -------------------------------------------------
 upload_dates = sorted(df_filtered["upload_date"].unique())
 
 if len(upload_dates) < 2:
-    st.warning("Need at least TWO upload dates to compare trends.")
+    st.warning("Need at least two upload dates to compare.")
     st.stop()
 
-date_a = st.sidebar.selectbox("Select Upload Date A", upload_dates, index=0)
-date_b = st.sidebar.selectbox("Select Upload Date B", upload_dates, index=1)
+date_a = st.sidebar.selectbox("Upload Date A", upload_dates)
+date_b = st.sidebar.selectbox("Upload Date B", upload_dates)
 
 df_a = df_filtered[df_filtered["upload_date"] == date_a]
 df_b = df_filtered[df_filtered["upload_date"] == date_b]
 
+
 # -------------------------------------------------
-# Step 6 — Plotting
+# Aggregate
 # -------------------------------------------------
 daily_a = df_a.groupby("ship_date")["order_qty"].sum().reset_index()
 daily_b = df_b.groupby("ship_date")["order_qty"].sum().reset_index()
@@ -210,8 +185,11 @@ merged = (
     .fillna(0)
 )
 
-st.subheader(f"📉 Trend Comparison: {date_a} vs {date_b} (Last 5 Months)")
+# -------------------------------------------------
+# Plot
+# -------------------------------------------------
+st.subheader(f"📉 Trend Comparison: {selected_customer} / {selected_product}")
 st.line_chart(merged.set_index("ship_date"))
 
-st.subheader("📋 Data Table")
+st.subheader("📋 Full Data")
 st.dataframe(merged)
