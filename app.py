@@ -14,7 +14,7 @@ st.write("Compare any two uploaded dates, with automatic historical storage in N
 
 if st.sidebar.button("🔄 Reset App"):
     st.session_state.clear()
-    st.experimental_rerun()
+    st.rerun()
 
 # ---------------------------------------------
 # Initialize session_state
