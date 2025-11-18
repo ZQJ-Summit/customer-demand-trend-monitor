@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+from psycopg2.extras import execute_values
 from datetime import datetime
 
 # -------------------------------------------------
@@ -39,10 +40,12 @@ def normalize_cols(df):
 
 
 # -------------------------------------------------
-# File Upload
+# File Upload Section
 # -------------------------------------------------
 st.sidebar.header("Upload today's CSV")
 uploaded_file = st.sidebar.file_uploader("Select CSV", type=["csv"])
+
+df = None
 
 if uploaded_file:
     st.info("⏳ Reading file...")
@@ -64,7 +67,7 @@ if uploaded_file:
 
     missing = [c for c in required if c not in df.columns]
     if missing:
-        st.error(f"❌ Missing columns: {missing}")
+        st.error(f"❌ Missing required columns: {missing}")
         st.stop()
 
     df = df.rename(columns=required)
@@ -72,43 +75,48 @@ if uploaded_file:
 
     st.success("File loaded successfully!")
 
-    if st.sidebar.button("📤 Upload to Neon"):
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
 
-            insert_sql = """
-                INSERT INTO demand_history
-                (upload_date, ship_date, customer_code, customer_part_no, order_qty)
-                VALUES (%s, %s, %s, %s, %s)
-            """
+# -------------------------------------------------
+# Upload to Neon Button
+# -------------------------------------------------
+if df is not None and st.sidebar.button("📤 Upload to Neon"):
 
-            upload_date = datetime.now().date()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
 
-            rows = [
-                (
-                    upload_date,
-                    row["ship_date"],
-                    row["customer_code"],
-                    row["customer_part_no"],
-                    int(row["order_qty"]),
-                )
-                for _, row in df.iterrows()
-            ]
+        insert_sql = """
+            INSERT INTO demand_history
+            (upload_date, ship_date, customer_code, customer_part_no, order_qty)
+            VALUES %s
+        """
 
-            cur.executemany(insert_sql, rows)
-            conn.commit()
-            cur.close()
-            conn.close()
+        upload_date = datetime.now().date()
 
-            st.success(f"✅ Uploaded {len(df)} rows to Neon!")
+        values = [
+            (
+                upload_date,
+                row["ship_date"],
+                row["customer_code"],
+                row["customer_part_no"],
+                int(row["order_qty"]),
+            )
+            for _, row in df.iterrows()
+        ]
 
-        except Exception as e:
-            st.error(f"❌ Neon insert error: {e}")
+        execute_values(cur, insert_sql, values)
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        st.success(f"✅ Uploaded {len(df)} rows to Neon in seconds!")
+
+    except Exception as e:
+        st.error(f"❌ Neon insert error: {e}")
 
 
 # -------------------------------------------------
-# Load History
+# Load All History
 # -------------------------------------------------
 try:
     conn = get_conn()
@@ -138,7 +146,7 @@ history = pd.DataFrame(rows, columns=[
 
 
 # -------------------------------------------------
-# Filters
+# Sidebar Filters
 # -------------------------------------------------
 st.sidebar.header("Filters")
 
@@ -171,7 +179,7 @@ df_b = df_filtered[df_filtered["upload_date"] == date_b]
 
 
 # -------------------------------------------------
-# Aggregate
+# Aggregate Trend Data
 # -------------------------------------------------
 daily_a = df_a.groupby("ship_date")["order_qty"].sum().reset_index()
 daily_b = df_b.groupby("ship_date")["order_qty"].sum().reset_index()
@@ -186,7 +194,7 @@ merged = (
 )
 
 # -------------------------------------------------
-# Plot
+# Plot Trend
 # -------------------------------------------------
 st.subheader(f"📉 Trend Comparison: {selected_customer} / {selected_product}")
 st.line_chart(merged.set_index("ship_date"))
